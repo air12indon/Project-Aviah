@@ -141,7 +141,7 @@ code{background:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:13px;}
   <!-- CUSTOMERS TAB -->
   <div class="tab-panel" id="panel-customers">
     <div class="card">
-      <div class="section-title">Add New Customer</div>
+      <div class="section-title" id="custFormTitle">Add New Customer</div>
       <div class="input-group"><label>Customer ID</label><input type="text" id="newCustId" placeholder="e.g. C-0001"></div>
       <div class="input-group"><label>Name</label><input type="text" id="newCustName" placeholder="Store / customer name"></div>
       <div class="input-group"><label>Address</label><input type="text" id="newCustAddress" placeholder="Store address"></div>
@@ -151,7 +151,8 @@ code{background:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:13px;}
         <div class="input-group"><label>Visit Target (Qty/order, in reams)</label><input type="number" id="newCustVisit" placeholder="0"></div>
       </div>
       <div class="error-text hidden" id="newCustError"></div>
-      <button class="btn" onclick="createCustomer()">Save Customer</button>
+      <button class="btn" id="custSaveBtn" onclick="createCustomer()">Save Customer</button>
+      <button class="btn btn-secondary hidden" id="custCancelEditBtn" onclick="cancelEditCustomer()">Cancel Edit</button>
     </div>
     <div class="section-title">All Customers</div>
     <div class="input-group"><input type="text" id="custSearchBox" placeholder="Search by name or ID..." oninput="renderCustomerList()"></div>
@@ -294,6 +295,10 @@ let customersUnsub = null;
 let custHistoryUnsub = null;
 let catalogUnsub = null;
 let catalogItemsCache = [];
+let customersCache = {};
+let editingCustomerId = null;
+let ordersCache = {};
+let editingOrderId = null;
 
 if (isConfigured) {
   firebase.initializeApp(firebaseConfig);
@@ -442,6 +447,16 @@ async function createCustomer() {
 
   if (!id || !name) { errEl.textContent = 'Customer ID and Name are required.'; errEl.classList.remove('hidden'); return; }
 
+  if (editingCustomerId) {
+    await db.collection('customers').doc(editingCustomerId).update({
+      name, address, contact,
+      incentiveTarget: incentive,
+      visitTarget: visit
+    });
+    cancelEditCustomer();
+    return;
+  }
+
   const existing = await db.collection('customers').doc(id).get();
   if (existing.exists) { errEl.textContent = 'A customer with this ID already exists.'; errEl.classList.remove('hidden'); return; }
 
@@ -453,7 +468,32 @@ async function createCustomer() {
   });
 
   ['newCustId','newCustName','newCustAddress','newCustContact','newCustIncentive','newCustVisit'].forEach(i => document.getElementById(i).value = '');
-  renderCustomerList();
+}
+
+function startEditCustomer(id) {
+  const c = customersCache[id];
+  if (!c) return;
+  editingCustomerId = id;
+  document.getElementById('newCustId').value = id;
+  document.getElementById('newCustId').disabled = true;
+  document.getElementById('newCustName').value = c.name || '';
+  document.getElementById('newCustAddress').value = c.address || '';
+  document.getElementById('newCustContact').value = c.contact || '';
+  document.getElementById('newCustIncentive').value = c.incentiveTarget || '';
+  document.getElementById('newCustVisit').value = c.visitTarget || '';
+  document.getElementById('custFormTitle').textContent = 'Edit Customer';
+  document.getElementById('custSaveBtn').textContent = 'Update Customer';
+  document.getElementById('custCancelEditBtn').classList.remove('hidden');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function cancelEditCustomer() {
+  editingCustomerId = null;
+  ['newCustId','newCustName','newCustAddress','newCustContact','newCustIncentive','newCustVisit'].forEach(i => document.getElementById(i).value = '');
+  document.getElementById('newCustId').disabled = false;
+  document.getElementById('custFormTitle').textContent = 'Add New Customer';
+  document.getElementById('custSaveBtn').textContent = 'Save Customer';
+  document.getElementById('custCancelEditBtn').classList.add('hidden');
 }
 
 function renderCustomerList() {
@@ -465,18 +505,20 @@ function renderCustomerList() {
     const rows = [];
     snap.forEach(doc => {
       const d = doc.data();
+      customersCache[doc.id] = d;
       if (search && !doc.id.toLowerCase().includes(search) && !(d.name || '').toLowerCase().includes(search)) return;
       rows.push({ id: doc.id, ...d });
     });
     if (rows.length === 0) { area.innerHTML = '<div class="empty-state">No customers found.</div>'; return; }
     area.innerHTML = rows.map(c => `
-      <div class="list-item">
+      <div class="list-item" style="cursor:pointer;" onclick="startEditCustomer('${c.id}')">
         <div class="list-item-top">
           <div class="list-item-name">${escapeHtml(c.name)}</div>
           <div class="list-item-meta">${escapeHtml(c.id)}</div>
         </div>
         <div class="list-item-meta">${escapeHtml(c.address || '')} ${c.contact ? '· ' + escapeHtml(c.contact) : ''}</div>
         <div class="list-item-meta">Incentive Target: ${(c.incentiveTarget||0).toFixed(2)} reams/month · Visit Target: ${(c.visitTarget||0).toFixed(2)} reams/order</div>
+        <div class="small-muted">Tap to edit</div>
       </div>
     `).join('');
   });
@@ -572,14 +614,16 @@ function renderOrderCustomerDetail(custId, cust) {
       <div id="mtdBanner-${custId}" style="margin-top:12px;"></div>
     </div>
     <div class="card">
-      <div class="section-title">New Order</div>
+      <div class="section-title" id="orderFormTitle-${custId}">New Order</div>
       <div class="catalog-order-list" id="repOrderItems-${custId}" data-context="REP_${custId}">${renderCatalogQtyList('REP_' + custId)}</div>
       <div class="total-line" id="repOrderTotal-${custId}">Total: ₱0.00</div>
-      <button class="btn" onclick="submitRepOrder('${custId}', ${cust.visitTarget || 0})">Submit Order</button>
+      <button class="btn" id="orderSubmitBtn-${custId}" onclick="submitRepOrder('${custId}', ${cust.visitTarget || 0})">Submit Order</button>
+      <button class="btn btn-secondary hidden" id="orderCancelEditBtn-${custId}" onclick="cancelEditOrder('${custId}')">Cancel Edit</button>
     </div>
     <div class="section-title">Pending Orders for this Customer</div>
     <div id="pendingOrdersArea-${custId}"><div class="empty-state">Loading...</div></div>
   `;
+  editingOrderId = null;
   watchCustomerOrders(custId, cust);
 }
 
@@ -644,6 +688,12 @@ async function submitRepOrder(custId, visitTarget) {
   const { total, totalQty, items } = computeCatalogListTotals('REP_' + custId);
   if (items.length === 0) { alert('Enter a quantity for at least one item.'); return; }
 
+  if (editingOrderId) {
+    await db.collection('orders').doc(editingOrderId).update({ items, total, totalQty });
+    cancelEditOrder(custId);
+    return;
+  }
+
   await db.collection('orders').add({
     customerId: custId,
     items, total, totalQty,
@@ -660,11 +710,48 @@ async function submitRepOrder(custId, visitTarget) {
   recalcRepOrderTotal(custId);
 }
 
+function editOrder(orderId, custId) {
+  const o = ordersCache[orderId];
+  if (!o) return;
+  editingOrderId = orderId;
+  document.getElementById('repOrderItems-' + custId).innerHTML = renderCatalogQtyList('REP_' + custId);
+  o.items.forEach(it => {
+    const el = document.getElementById(`qty-REP_${custId}-${it.code}`);
+    if (el) el.value = it.qtyReams;
+  });
+  recalcRepOrderTotal(custId);
+  const titleEl = document.getElementById('orderFormTitle-' + custId);
+  if (titleEl) titleEl.textContent = 'Editing Order';
+  const btnEl = document.getElementById('orderSubmitBtn-' + custId);
+  if (btnEl) btnEl.textContent = 'Save Changes';
+  const cancelEl = document.getElementById('orderCancelEditBtn-' + custId);
+  if (cancelEl) cancelEl.classList.remove('hidden');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function cancelEditOrder(custId) {
+  editingOrderId = null;
+  document.getElementById('repOrderItems-' + custId).innerHTML = renderCatalogQtyList('REP_' + custId);
+  recalcRepOrderTotal(custId);
+  const titleEl = document.getElementById('orderFormTitle-' + custId);
+  if (titleEl) titleEl.textContent = 'New Order';
+  const btnEl = document.getElementById('orderSubmitBtn-' + custId);
+  if (btnEl) btnEl.textContent = 'Submit Order';
+  const cancelEl = document.getElementById('orderCancelEditBtn-' + custId);
+  if (cancelEl) cancelEl.classList.add('hidden');
+}
+
+async function deleteOrder(orderId) {
+  if (!confirm('Delete this order? This cannot be undone.')) return;
+  if (editingOrderId === orderId) editingOrderId = null;
+  await db.collection('orders').doc(orderId).delete();
+}
+
 function watchCustomerOrders(custId, cust) {
   if (orderLookupUnsub) orderLookupUnsub();
   orderLookupUnsub = db.collection('orders').where('customerId', '==', custId).onSnapshot(snap => {
     const all = [];
-    snap.forEach(doc => all.push({ id: doc.id, ...doc.data() }));
+    snap.forEach(doc => { const d = { id: doc.id, ...doc.data() }; all.push(d); ordersCache[doc.id] = d; });
 
     // MTD quantity (reams) across all orders this calendar month (pending + served)
     const now = new Date();
@@ -702,7 +789,11 @@ function watchCustomerOrders(custId, cust) {
             <div class="list-item-meta">${o.items.map(i => escapeHtml(i.name) + ' — ' + i.qtyReams + ' ream(s)').join(', ')}</div>
             <div class="total-line">₱${(o.total||0).toFixed(2)} · ${(o.totalQty||0).toFixed(2)} reams</div>
             ${cust.visitTarget > 0 && (o.totalQty||0) < cust.visitTarget ? `<div class="error-text">Below visit target of ${cust.visitTarget.toFixed(2)} reams</div>` : ''}
-            <button class="btn btn-secondary btn-small" onclick="markOrderDone('${o.id}')">Mark Order Done</button>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="btn btn-secondary btn-small" onclick="markOrderDone('${o.id}')">Mark Done</button>
+              <button class="btn btn-secondary btn-small" onclick="editOrder('${o.id}','${custId}')">Edit</button>
+              <button class="btn btn-danger btn-small" onclick="deleteOrder('${o.id}')">Delete</button>
+            </div>
           </div>
         `).join('');
       }
@@ -734,6 +825,7 @@ function loadServedSheet() {
         </div>
         <div class="list-item-meta">${o.items.map(i => escapeHtml(i.name) + ' — ' + i.qtyReams + ' ream(s)').join(', ')}</div>
         <div class="total-line">₱${(o.total||0).toFixed(2)} · ${(o.totalQty||0).toFixed(2)} reams</div>
+        <button class="btn btn-danger btn-small" style="margin-top:8px;" onclick="deleteOrder('${o.id}')">Delete</button>
       </div>
     `).join('');
   });
